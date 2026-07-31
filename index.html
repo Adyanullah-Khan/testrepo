@@ -15,42 +15,131 @@
   #msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;
     color:#ff4fd0;text-shadow:0 0 12px #ff4fd0,0 0 30px #ff4fd0;font-size:28px;display:none;pointer-events:none;}
   #msg span{display:block;font-size:15px;color:#4ff3ff;text-shadow:0 0 8px #4ff3ff;margin-top:10px;}
+  #diff{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:8px;}
+  #diff button{background:#04050f;color:#4ff3ff;border:1px solid #4ff3ff88;border-radius:6px;
+    font-family:inherit;font-size:12px;letter-spacing:1px;padding:5px 12px;cursor:pointer;
+    text-shadow:0 0 6px #4ff3ff;transition:.15s;}
+  #diff button.active{background:#4ff3ff;color:#04050f;box-shadow:0 0 14px #4ff3ff;text-shadow:none;}
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="c" width="640" height="720"></canvas>
-  <div id="hud"><div id="score">SCORE: 0</div><div id="lives">LIVES: ♥♥♥</div></div>
+  <div id="hud"><div id="score">SCORE: 0</div><div id="round">ROUND: 1</div><div id="lives">LIVES: ♥♥♥</div></div>
   <div id="msg">GAME OVER<span>Press R to restart</span></div>
+  <div id="diff">
+    <button data-d="easy">EASY</button>
+    <button data-d="normal" class="active">NORMAL</button>
+    <button data-d="hard">HARD</button>
+  </div>
 </div>
 <script>
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
-const scoreEl = document.getElementById('score'), livesEl = document.getElementById('lives'), msgEl = document.getElementById('msg');
+const scoreEl = document.getElementById('score'), livesEl = document.getElementById('lives'), roundEl = document.getElementById('round'), msgEl = document.getElementById('msg');
+
+// ---------- sound (Web Audio, no assets) ----------
+let actx = null;
+function ensureAudio() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function beep(freq, dur, type = 'square', vol = 0.15) {
+  const a = ensureAudio();
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.value = freq;
+  o.connect(g); g.connect(a.destination);
+  const now = a.currentTime;
+  g.gain.setValueAtTime(vol, now);
+  g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+  o.start(now); o.stop(now + dur);
+}
+const sfx = {
+  shoot: () => beep(880, 0.07, 'square', 0.1),
+  alienShoot: () => beep(220, 0.08, 'sawtooth', 0.07),
+  explosion: () => beep(140, 0.15, 'square', 0.14),
+  hit: () => beep(90, 0.25, 'sawtooth', 0.2),
+  round: () => { beep(440, 0.1, 'triangle', 0.15); setTimeout(() => beep(660, 0.15, 'triangle', 0.15), 100); },
+  gameOver: () => { beep(200, 0.3, 'sawtooth', 0.2); setTimeout(() => beep(110, 0.4, 'sawtooth', 0.2), 150); },
+};
+
+// ---------- difficulty ----------
+const DIFF = {
+  easy:   { speed: 0.65, shoot: 0.55, dive: 0.5, stray: 0.5 },
+  normal: { speed: 1,    shoot: 1,    dive: 1,   stray: 1 },
+  hard:   { speed: 1.5,  shoot: 1.8,  dive: 1.8, stray: 1.8 },
+};
+let difficulty = 'normal';
+document.querySelectorAll('#diff button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    difficulty = btn.dataset.d;
+    document.querySelectorAll('#diff button').forEach(b => b.classList.toggle('active', b === btn));
+    ensureAudio();
+  });
+});
 
 let keys = {};
 addEventListener('keydown', e => {
   if (['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
   if (e.key === 'r' || e.key === 'R') if (state.over) init();
+  ensureAudio();
 });
 addEventListener('keyup', e => keys[e.key] = false);
 
 const COLS = 11, ROWS = 5, A_W = 34, A_H = 24, A_GAP = 14;
 const gridW = COLS * (A_W + A_GAP) - A_GAP;
 const ROW_COLORS = ['#ff4fd0','#ff8a4f','#ffe14f','#4fff8a','#4ff3ff'];
+const ROUND_THRESHOLDS = [200, 400];
+const DIVE_DEPTH = H - 160;
+const COUNTDOWN_FRAMES = 240;
+const COUNTDOWN_LABELS = ['3', '2', '1', 'GO!'];
+
+// each entry maps a (row, col) grid cell to a shape offset / skip flag, cycled per wave for variety
+const PATTERNS = [
+  (r, c) => ({ dx: 0, dy: 0, skip: false }),                                   // standard grid
+  (r, c) => ({ dx: 0, dy: Math.abs(c-5)*7, skip: false }),                     // arch / chevron
+  (r, c) => ({ dx: 0, dy: 0, skip: Math.abs(c-5)+Math.abs(r-2) > 6 }),         // diamond
+  (r, c) => ({ dx: (r%2)*16 - 8, dy: 0, skip: false }),                        // staggered zigzag
+];
 
 let state, player, aliens, bullets, aBullets, particles;
 
-function init() {
-  state = { score: 0, lives: 3, over: false, dir: 1, speed: 1, dropping: false, dropAmt: 0, shootTimer: 0 };
-  player = { x: W/2 - 20, y: H - 50, w: 40, h: 20, speed: 6 };
+// row 0 = circler (orbits in place), row 1 = diver (swoops down & back), rest = standard grid
+function typeForRow(r) { return r === 0 ? 'circler' : r === 1 ? 'diver' : 'grid'; }
+
+function spawnAliens() {
   aliens = [];
   const offX = (W - gridW) / 2;
+  const pattern = PATTERNS[state.wave % PATTERNS.length];
+  state.wave++;
   for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      aliens.push({ x: offX + c*(A_W+A_GAP), y: 70 + r*(A_H+A_GAP), w: A_W, h: A_H, alive: true, row: r });
-  bullets = []; aBullets = []; particles = [];
+    for (let c = 0; c < COLS; c++) {
+      const { dx, dy, skip } = pattern(r, c);
+      if (skip) continue;
+      const type = typeForRow(r);
+      const baseX = offX + c*(A_W+A_GAP) + dx, baseY = 70 + r*(A_H+A_GAP) + dy;
+      aliens.push({
+        baseX, baseY, x: baseX, y: baseY,
+        w: A_W, h: A_H, alive: true, row: r, type,
+        angle: Math.random()*Math.PI*2,
+        diveState: 'idle', diveTimer: 120 + Math.random()*300, diveProgress: 0,
+      });
+    }
+  state.dir = 1;
+  state.formX = 0; state.formY = 0;
+  state.speed = (1 + (state.round - 1) * 0.5) * DIFF[difficulty].speed;
+  bullets = []; aBullets = [];
+  state.phase = 'countdown';
+  state.countdownTimer = COUNTDOWN_FRAMES;
+}
+
+function init() {
+  state = { score: 0, lives: 3, over: false, round: 1, wave: 0, shootTimer: 0 };
+  player = { x: W/2 - 20, y: H - 50, w: 40, h: 20, speed: 6 };
+  particles = [];
+  spawnAliens();
   msgEl.style.display = 'none';
 }
 
@@ -64,6 +153,14 @@ function spawnParticles(x, y, color) {
 function update() {
   if (state.over) return;
 
+  if (state.phase === 'countdown') {
+    state.countdownTimer--;
+    if (state.countdownTimer <= 0) state.phase = 'playing';
+    return;
+  }
+
+  const d = DIFF[difficulty];
+
   if (keys['ArrowLeft']) player.x -= player.speed;
   if (keys['ArrowRight']) player.x += player.speed;
   player.x = Math.max(0, Math.min(W - player.w, player.x));
@@ -72,29 +169,65 @@ function update() {
   if (keys[' '] && state.shootTimer <= 0) {
     bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 12 });
     state.shootTimer = 18;
+    sfx.shoot();
   }
 
   bullets.forEach(b => b.y -= 9);
   bullets = bullets.filter(b => b.y > -20);
-  aBullets.forEach(b => b.y += 5);
+  aBullets.forEach(b => b.y += b.vy || 5);
   aBullets = aBullets.filter(b => b.y < H + 20);
 
-  const alive = aliens.filter(a => a.alive);
-  let hitEdge = false;
-  for (const a of alive) {
-    if (a.x + a.w >= W && state.dir === 1) hitEdge = true;
-    if (a.x <= 0 && state.dir === -1) hitEdge = true;
+  // occasional stray bullet from nowhere, independent of any alien
+  if (Math.random() < 0.006 * d.stray) {
+    aBullets.push({ x: Math.random()*(W-4), y: -10, w: 4, h: 12, vy: 6, color: '#b34fff' });
   }
+
+  const alive = aliens.filter(a => a.alive);
+
+  // formation bounds use each alien's base grid position (orbit/dive offsets excluded)
+  let minX = Infinity, maxX = -Infinity;
+  for (const a of alive) { minX = Math.min(minX, a.baseX+state.formX); maxX = Math.max(maxX, a.baseX+state.formX+a.w); }
+  let hitEdge = false;
+  if (maxX >= W && state.dir === 1) hitEdge = true;
+  if (minX <= 0 && state.dir === -1) hitEdge = true;
   if (hitEdge) {
     state.dir *= -1;
-    state.speed += 0.18;
-    for (const a of alive) a.y += 16;
+    state.speed += 0.18 * d.speed;
+    state.formY += 16;
   }
-  for (const a of alive) a.x += state.dir * state.speed;
+  state.formX += state.dir * state.speed;
 
-  if (Math.random() < 0.02 + alive.length * 0.0003 && alive.length) {
+  for (const a of alive) {
+    const bx = a.baseX + state.formX, by = a.baseY + state.formY;
+    if (a.type === 'circler') {
+      a.angle += 0.05;
+      a.x = bx + Math.cos(a.angle) * 18;
+      a.y = by + Math.sin(a.angle) * 10;
+    } else if (a.type === 'diver') {
+      if (a.diveState === 'idle') {
+        a.diveTimer--;
+        a.x = bx; a.y = by;
+        if (a.diveTimer <= 0 && Math.random() < 0.004 * d.dive) a.diveState = 'diving';
+      } else if (a.diveState === 'diving') {
+        a.diveProgress = Math.min(1, a.diveProgress + 0.016 * d.dive);
+        a.x = bx + Math.sin(a.diveProgress*6) * 40;
+        a.y = by + a.diveProgress * (DIVE_DEPTH - by);
+        if (a.diveProgress >= 1) a.diveState = 'returning';
+      } else {
+        a.diveProgress = Math.max(0, a.diveProgress - 0.025 * d.dive);
+        a.x = bx + Math.sin(a.diveProgress*6) * 40;
+        a.y = by + a.diveProgress * (DIVE_DEPTH - by);
+        if (a.diveProgress <= 0) { a.diveState = 'idle'; a.diveTimer = 150 + Math.random()*300; }
+      }
+    } else {
+      a.x = bx; a.y = by;
+    }
+  }
+
+  if (Math.random() < (0.015 + alive.length * 0.0003) * d.shoot && alive.length) {
     const shooter = alive[Math.floor(Math.random()*alive.length)];
-    aBullets.push({ x: shooter.x + shooter.w/2 - 2, y: shooter.y + shooter.h, w: 4, h: 12 });
+    aBullets.push({ x: shooter.x + shooter.w/2 - 2, y: shooter.y + shooter.h, w: 4, h: 12, vy: 5 });
+    sfx.alienShoot();
   }
 
   for (const b of bullets) {
@@ -104,35 +237,56 @@ function update() {
         a.alive = false; b.y = -999;
         state.score += (ROWS - a.row) * 10;
         spawnParticles(a.x+a.w/2, a.y+a.h/2, ROW_COLORS[a.row]);
+        sfx.explosion();
       }
     }
   }
   bullets = bullets.filter(b => b.y > -20);
+
+  const nextRound = ROUND_THRESHOLDS.filter(t => state.score >= t).length + 1;
+  if (nextRound > state.round) {
+    state.round = nextRound;
+    spawnAliens();
+    sfx.round();
+  }
 
   for (const b of aBullets) {
     if (b.x < player.x+player.w && b.x+b.w > player.x && b.y < player.y+player.h && b.y+b.h > player.y) {
       b.y = H + 999;
       state.lives--;
       spawnParticles(player.x+player.w/2, player.y+player.h/2, '#4ff3ff');
+      sfx.hit();
       if (state.lives <= 0) endGame();
     }
   }
   aBullets = aBullets.filter(b => b.y < H + 20);
 
-  for (const a of alive) if (a.y + a.h >= player.y) endGame();
+  // direct contact with an attacker costs a life instead of ending the game outright
+  for (const a of alive) {
+    if (!a.alive) continue;
+    if (a.x < player.x+player.w && a.x+a.w > player.x && a.y < player.y+player.h && a.y+a.h > player.y) {
+      a.alive = false;
+      state.lives--;
+      spawnParticles(player.x+player.w/2, player.y+player.h/2, '#ff4fd0');
+      sfx.hit();
+      if (state.lives <= 0) endGame();
+    }
+  }
 
   particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
   particles = particles.filter(p => p.life > 0);
 
-  if (alive.length === 0) init();
+  if (alive.every(a => !a.alive)) spawnAliens();
 
   scoreEl.textContent = 'SCORE: ' + state.score;
+  roundEl.textContent = 'ROUND: ' + state.round;
   livesEl.textContent = 'LIVES: ' + '♥'.repeat(Math.max(state.lives,0));
 }
 
 function endGame() {
   state.over = true;
   msgEl.style.display = 'block';
+  sfx.gameOver();
 }
 
 function glowRect(x, y, w, h, color) {
@@ -146,7 +300,7 @@ function glowRect(x, y, w, h, color) {
 function drawAlien(a) {
   const color = ROW_COLORS[a.row];
   ctx.save();
-  ctx.shadowColor = color; ctx.shadowBlur = 10;
+  ctx.shadowColor = color; ctx.shadowBlur = a.type === 'diver' && a.diveState !== 'idle' ? 20 : 10;
   ctx.fillStyle = color;
   ctx.fillRect(a.x+6, a.y, a.w-12, 6);
   ctx.fillRect(a.x, a.y+6, a.w, 8);
@@ -154,6 +308,10 @@ function drawAlien(a) {
   ctx.fillStyle = '#04050f';
   ctx.fillRect(a.x+7, a.y+8, 5, 5);
   ctx.fillRect(a.x+a.w-12, a.y+8, 5, 5);
+  if (a.type === 'circler') {
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(a.x+a.w/2, a.y+a.h/2, a.w*0.75, 0, Math.PI*2); ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -171,7 +329,7 @@ function draw() {
 
   aliens.forEach(a => a.alive && drawAlien(a));
   bullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, '#4fff8a'));
-  aBullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, '#ff4f4f'));
+  aBullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, b.color || '#ff4f4f'));
 
   ctx.save();
   ctx.shadowColor = '#4ff3ff'; ctx.shadowBlur = 16;
@@ -192,6 +350,23 @@ function draw() {
     ctx.fillRect(p.x, p.y, 3, 3);
     ctx.restore();
   });
+
+  if (state.phase === 'countdown') {
+    const label = COUNTDOWN_LABELS[Math.min(3, Math.floor((COUNTDOWN_FRAMES - state.countdownTimer) / 60))];
+    ctx.save();
+    ctx.fillStyle = '#04050f99';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff4fd0';
+    ctx.shadowColor = '#ff4fd0'; ctx.shadowBlur = 24;
+    ctx.font = 'bold 64px monospace';
+    ctx.fillText(label, W/2, H/2);
+    ctx.fillStyle = '#4ff3ff';
+    ctx.shadowColor = '#4ff3ff'; ctx.shadowBlur = 12;
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText('ROUND ' + state.round, W/2, H/2 - 70);
+    ctx.restore();
+  }
 }
 
 function loop() {
