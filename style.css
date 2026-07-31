@@ -1,0 +1,16 @@
+html,body{margin:0;height:100%;background:radial-gradient(ellipse at center,#0b0e2a 0%,#04050f 70%);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:'Courier New',monospace;}
+#wrap{position:relative;}
+canvas{background:radial-gradient(ellipse at 50% 30%,#0d1030 0%,#020210 80%);
+  border:2px solid #4ff3ff;border-radius:12px;
+  box-shadow:0 0 20px #4ff3ff,0 0 60px #4ff3ff55,inset 0 0 40px #0ff3ff22;}
+#hud{position:absolute;top:10px;left:16px;right:16px;display:flex;justify-content:space-between;
+  color:#4ff3ff;text-shadow:0 0 8px #4ff3ff;font-size:18px;letter-spacing:2px;pointer-events:none;}
+#msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;
+  color:#ff4fd0;text-shadow:0 0 12px #ff4fd0,0 0 30px #ff4fd0;font-size:28px;display:none;pointer-events:none;}
+#msg span{display:block;font-size:15px;color:#4ff3ff;text-shadow:0 0 8px #4ff3ff;margin-top:10px;}
+#diff{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:8px;}
+#diff button{background:#04050f;color:#4ff3ff;border:1px solid #4ff3ff88;border-radius:6px;
+  font-family:inherit;font-size:12px;letter-spacing:1px;padding:5px 12px;cursor:pointer;
+  text-shadow:0 0 6px #4ff3ff;transition:.15s;}
+#diff button.active{background:#4ff3ff;color:#04050f;box-shadow:0 0 14px #4ff3ff;text-shadow:none;}

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repo is a single-file Space Invaders game: `index.html`. It's plain HTML/CSS/JS with no dependencies, no build step, and no package manager — the entire game (markup, styles, and logic) lives in that one file.
+This is a Space Invaders game in plain HTML/CSS/JS — no dependencies, no build step, no package manager. `index.html` just links `style.css` and loads four `<script>` files in order: `audio.js`, `background.js`, `sprites.js`, `game.js` (order matters — `game.js` is last since it calls `init()`/`loop()`, which depend on globals the other three define; classic scripts share one global scope, so load order only needs to satisfy call-time, not declaration-time, dependencies).
 
 ## Running
 
@@ -18,18 +18,18 @@ Then visit `http://localhost:8000/index.html`. There are no build, lint, or test
 
 ## Architecture
 
-Everything is in `index.html`, organized top to bottom as:
-
-- **`<style>`** — dark/neon visual theme (glow via `box-shadow`/`text-shadow`, radial-gradient background).
-- **Canvas + HUD markup** — a single `<canvas id="c">` (640×720) plus overlay `<div>`s for score/round/lives (`#hud`), the game-over message (`#msg`), and difficulty buttons (`#diff`), positioned absolutely over the canvas.
-- **Game script** — a single `<script>` block with no modules/classes, structured as:
-  - **Sound**: `beep(freq, dur, type, vol)` creates a lazily-initialized `AudioContext` (`ensureAudio()`) and fires one oscillator+gain envelope per call — no audio assets. The `sfx` object (`shoot`, `alienShoot`, `explosion`, `hit`, `round`, `gameOver`) wraps `beep()` with per-event tone presets; call these instead of touching `AudioContext` directly.
+- **`style.css`** — dark/neon visual theme (glow via `box-shadow`/`text-shadow`, radial-gradient background).
+- **`index.html`** — a single `<canvas id="c">` (640×720) plus overlay `<div>`s for score/round/lives (`#hud`), the game-over message (`#msg`), and difficulty buttons (`#diff`), positioned absolutely over the canvas.
+- **`audio.js`** — `beep(freq, dur, type, vol)` creates a lazily-initialized `AudioContext` (`ensureAudio()`) and fires one oscillator+gain envelope per call — no audio assets. The `sfx` object (`shoot`, `alienShoot`, `explosion`, `hit`, `round`, `gameOver`) wraps `beep()` with per-event tone presets; call these instead of touching `AudioContext` directly.
+- **`background.js`** — `drawBackground()`, the starfield dots behind everything else.
+- **`sprites.js`** — all pixel-art rendering: `SPRITES`/`SHIP_SPRITE` bitmap constants, `drawSprite()` (maps a bitmap onto any box), `drawAlien()` (adds an orbit ring for circlers and extra glow for an actively-diving diver), and `drawBolt()` (pixel laser bullets).
+- **`game.js`** — everything else:
   - **Difficulty**: `DIFF` maps `'easy'|'normal'|'hard'` to multipliers (`speed`, `shoot`, `dive`, `stray`) applied throughout `update()`/`spawnAliens()`. The `#diff` buttons set the module-level `difficulty` var on click; it takes effect on the next `spawnAliens()`/frame, no game reset required.
   - **Input**: a `keys{}` map updated by `keydown`/`keyup` listeners.
   - **`init()`**: (re)builds all mutable state — `state`, `player`, `aliens`, `bullets`, `aBullets`, `particles` — into module-level `let` variables, then calls `spawnAliens()`. Called on load and on restart (`R` after game over).
   - **`spawnAliens()`**: (re)builds the alien formation for the current `state.round`/`difficulty` using the next entry in `PATTERNS` (indexed by `state.wave`, which increments on every call — see Formation patterns below), resets `bullets`/`aBullets`/`state.formX`/`state.formY`/`state.dir`/`state.speed`, and puts the game into a `state.phase = 'countdown'` pause (see Countdown below). Called by `init()` (new game), by `update()` when a wave is fully cleared, and when a round threshold is crossed — score and lives are preserved across all of these except a full `init()`.
   - **`update()`**: while `state.phase === 'countdown'`, only ticks `state.countdownTimer` down and returns early (everything else is frozen). Otherwise: player movement/shooting, formation movement (edge detection flips `state.dir`, bumps `state.speed`, and drops `state.formY`; see Alien types below for how each alien turns that shared formation offset into its own `x`/`y`), alien + stray random shooting, bullet-vs-alien / bullet-vs-player / alien-vs-player collision (AABB checks), round progression (see below), particle physics, and HUD text sync.
-  - **`draw()`**: clears and redraws the canvas each frame — background dots, aliens and the ship as pixel-art sprites (`drawSprite()`, per-row color from `ROW_COLORS`, `drawAlien()` adds an orbit ring for circlers and extra glow for an actively-diving diver), bullets as pixel bolts (`drawBolt()`), and particles.
+  - **`draw()`**: clears the canvas and calls into `background.js`/`sprites.js` each frame, then draws particles and the countdown overlay itself.
   - **`loop()`**: `requestAnimationFrame` loop calling `update()` then `draw()`.
 
 ## Rounds
