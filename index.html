@@ -104,6 +104,27 @@ const PATTERNS = [
   (r, c) => ({ dx: (r%2)*16 - 8, dy: 0, skip: false }),                        // staggered zigzag
 ];
 
+// ---------- pixel-art sprites (8x6 for aliens, 9x7 for the ship) ----------
+const SPRITES = {
+  grid:    ['00100100','00111100','01111110','11011011','11111111','10100101'],
+  circler: ['00111100','01111110','11111111','11011011','01111110','00100100'],
+  diver:   ['00011000','00111100','01111110','11100111','11111111','01001010'],
+};
+const SHIP_SPRITE = ['000010000','000111000','000111000','001111100','011111110','111111111','101000101'];
+const SHIP_PIXELS = [];
+SHIP_SPRITE.forEach((row, r) => [...row].forEach((v, c) => v === '1' && SHIP_PIXELS.push(r*9+c)));
+
+function drawSprite(pattern, x, y, w, h, color, skip, glow = 8) {
+  const cols = pattern[0].length, rows = pattern.length, cw = w/cols, ch = h/rows;
+  ctx.save();
+  ctx.shadowColor = color; ctx.shadowBlur = glow;
+  ctx.fillStyle = color;
+  pattern.forEach((row, r) => [...row].forEach((v, c) => {
+    if (v === '1' && !(skip && skip.has(r*cols+c))) ctx.fillRect(x+c*cw, y+r*ch, cw+0.5, ch+0.5);
+  }));
+  ctx.restore();
+}
+
 let state, player, aliens, bullets, aBullets, particles;
 
 // row 0 = circler (orbits in place), row 1 = diver (swoops down & back), rest = standard grid
@@ -121,7 +142,7 @@ function spawnAliens() {
       const type = typeForRow(r);
       const baseX = offX + c*(A_W+A_GAP) + dx, baseY = 70 + r*(A_H+A_GAP) + dy;
       aliens.push({
-        baseX, baseY, x: baseX, y: baseY,
+        baseX, baseY, x: baseX, y: baseY - 220,
         w: A_W, h: A_H, alive: true, row: r, type,
         angle: Math.random()*Math.PI*2,
         diveState: 'idle', diveTimer: 120 + Math.random()*300, diveProgress: 0,
@@ -137,17 +158,38 @@ function spawnAliens() {
 
 function init() {
   state = { score: 0, lives: 3, over: false, round: 1, wave: 0, shootTimer: 0 };
-  player = { x: W/2 - 20, y: H - 50, w: 40, h: 20, speed: 6 };
+  player = { x: W/2 - 20, y: H - 50, w: 40, h: 20, speed: 6, missing: new Set() };
   particles = [];
   spawnAliens();
   msgEl.style.display = 'none';
 }
 
-function spawnParticles(x, y, color) {
-  for (let i = 0; i < 12; i++) {
-    const a = Math.random()*Math.PI*2, sp = 1 + Math.random()*3;
-    particles.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 30, color });
+function spawnParticles(x, y, color, { count = 12, grav = 0, blood = false } = {}) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random()*Math.PI*2, sp = 1 + Math.random()*(blood ? 4 : 3);
+    particles.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - (blood ? 1 : 0), life: 25 + Math.random()*20, color, size: blood ? 2 + Math.random()*3 : 3, grav });
   }
+}
+
+// chip pixels off the ship on each hit; on the killing hit, strip it bare for a full "explosion" look
+function damageShip(lethal) {
+  if (lethal) { SHIP_PIXELS.forEach(p => player.missing.add(p)); }
+  else {
+    const remaining = SHIP_PIXELS.filter(p => !player.missing.has(p));
+    for (let i = 0; i < 6 && remaining.length; i++) {
+      const idx = Math.floor(Math.random()*remaining.length);
+      player.missing.add(remaining.splice(idx, 1)[0]);
+    }
+  }
+  spawnParticles(player.x+player.w/2, player.y+player.h/2, lethal ? '#ff8a4f' : '#4ff3ff', { count: lethal ? 26 : 10, grav: 0.1 });
+}
+
+function hitPlayer() {
+  state.lives--;
+  const lethal = state.lives <= 0;
+  damageShip(lethal);
+  sfx.hit();
+  if (lethal) endGame();
 }
 
 function update() {
@@ -155,6 +197,9 @@ function update() {
 
   if (state.phase === 'countdown') {
     state.countdownTimer--;
+    const introT = Math.min(1, (COUNTDOWN_FRAMES - state.countdownTimer) / 40);
+    const eased = 1 - Math.pow(1-introT, 3); // ease-out cubic slide-in
+    for (const a of aliens) a.y = a.baseY - (1-eased) * 220;
     if (state.countdownTimer <= 0) state.phase = 'playing';
     return;
   }
@@ -236,7 +281,7 @@ function update() {
       if (b.x < a.x+a.w && b.x+b.w > a.x && b.y < a.y+a.h && b.y+b.h > a.y) {
         a.alive = false; b.y = -999;
         state.score += (ROWS - a.row) * 10;
-        spawnParticles(a.x+a.w/2, a.y+a.h/2, ROW_COLORS[a.row]);
+        spawnParticles(a.x+a.w/2, a.y+a.h/2, ROW_COLORS[a.row], { count: 16, grav: 0.15, blood: true });
         sfx.explosion();
       }
     }
@@ -253,10 +298,7 @@ function update() {
   for (const b of aBullets) {
     if (b.x < player.x+player.w && b.x+b.w > player.x && b.y < player.y+player.h && b.y+b.h > player.y) {
       b.y = H + 999;
-      state.lives--;
-      spawnParticles(player.x+player.w/2, player.y+player.h/2, '#4ff3ff');
-      sfx.hit();
-      if (state.lives <= 0) endGame();
+      hitPlayer();
     }
   }
   aBullets = aBullets.filter(b => b.y < H + 20);
@@ -266,14 +308,11 @@ function update() {
     if (!a.alive) continue;
     if (a.x < player.x+player.w && a.x+a.w > player.x && a.y < player.y+player.h && a.y+a.h > player.y) {
       a.alive = false;
-      state.lives--;
-      spawnParticles(player.x+player.w/2, player.y+player.h/2, '#ff4fd0');
-      sfx.hit();
-      if (state.lives <= 0) endGame();
+      hitPlayer();
     }
   }
 
-  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
+  particles.forEach(p => { p.vy += p.grav || 0; p.x += p.vx; p.y += p.vy; p.life--; });
   particles = particles.filter(p => p.life > 0);
 
   if (alive.every(a => !a.alive)) spawnAliens();
@@ -289,29 +328,26 @@ function endGame() {
   sfx.gameOver();
 }
 
-function glowRect(x, y, w, h, color) {
+function drawAlien(a) {
+  const color = ROW_COLORS[a.row];
+  const diving = a.type === 'diver' && a.diveState !== 'idle';
   ctx.save();
-  ctx.shadowColor = color; ctx.shadowBlur = 14;
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, w, h);
+  drawSprite(SPRITES[a.type], a.x, a.y, a.w, a.h, color, null, diving ? 20 : 8);
+  if (a.type === 'circler') {
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.shadowBlur = 6; ctx.shadowColor = color;
+    ctx.beginPath(); ctx.arc(a.x+a.w/2, a.y+a.h/2, a.w*0.75, 0, Math.PI*2); ctx.stroke();
+  }
   ctx.restore();
 }
 
-function drawAlien(a) {
-  const color = ROW_COLORS[a.row];
+function drawBolt(x, y, w, h, color) {
   ctx.save();
-  ctx.shadowColor = color; ctx.shadowBlur = a.type === 'diver' && a.diveState !== 'idle' ? 20 : 10;
+  ctx.shadowColor = color; ctx.shadowBlur = 12;
   ctx.fillStyle = color;
-  ctx.fillRect(a.x+6, a.y, a.w-12, 6);
-  ctx.fillRect(a.x, a.y+6, a.w, 8);
-  ctx.fillRect(a.x-4, a.y+14, a.w+8, 6);
-  ctx.fillStyle = '#04050f';
-  ctx.fillRect(a.x+7, a.y+8, 5, 5);
-  ctx.fillRect(a.x+a.w-12, a.y+8, 5, 5);
-  if (a.type === 'circler') {
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(a.x+a.w/2, a.y+a.h/2, a.w*0.75, 0, Math.PI*2); ctx.stroke();
-  }
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.9;
+  ctx.fillRect(x + w*0.2, y, w*0.6, h*0.35);
   ctx.restore();
 }
 
@@ -328,31 +364,26 @@ function draw() {
   ctx.restore();
 
   aliens.forEach(a => a.alive && drawAlien(a));
-  bullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, '#4fff8a'));
-  aBullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, b.color || '#ff4f4f'));
+  bullets.forEach(b => drawBolt(b.x, b.y, b.w, b.h, '#4fff8a'));
+  aBullets.forEach(b => drawBolt(b.x, b.y, b.w, b.h, b.color || '#ff4f4f'));
 
-  ctx.save();
-  ctx.shadowColor = '#4ff3ff'; ctx.shadowBlur = 16;
-  ctx.fillStyle = '#4ff3ff';
-  ctx.beginPath();
-  ctx.moveTo(player.x + player.w/2, player.y);
-  ctx.lineTo(player.x + player.w, player.y + player.h);
-  ctx.lineTo(player.x, player.y + player.h);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
+  const shipColor = player.missing.size > 12 ? '#ff8a4f' : '#4ff3ff';
+  drawSprite(SHIP_SPRITE, player.x, player.y - 8, player.w, player.h + 8, shipColor, player.missing);
 
   particles.forEach(p => {
     ctx.save();
-    ctx.globalAlpha = p.life / 30;
+    ctx.globalAlpha = Math.max(0, p.life / 35);
     ctx.shadowColor = p.color; ctx.shadowBlur = 8;
     ctx.fillStyle = p.color;
-    ctx.fillRect(p.x, p.y, 3, 3);
+    ctx.fillRect(p.x, p.y, p.size || 3, p.size || 3);
     ctx.restore();
   });
 
   if (state.phase === 'countdown') {
-    const label = COUNTDOWN_LABELS[Math.min(3, Math.floor((COUNTDOWN_FRAMES - state.countdownTimer) / 60))];
+    const elapsed = COUNTDOWN_FRAMES - state.countdownTimer;
+    const label = COUNTDOWN_LABELS[Math.min(3, Math.floor(elapsed / 60))];
+    const bannerT = Math.min(1, elapsed / 20);
+    const bannerX = W/2 - Math.pow(1-bannerT, 3) * 200; // slides in from the left, ease-out
     ctx.save();
     ctx.fillStyle = '#04050f99';
     ctx.fillRect(0, 0, W, H);
@@ -364,7 +395,7 @@ function draw() {
     ctx.fillStyle = '#4ff3ff';
     ctx.shadowColor = '#4ff3ff'; ctx.shadowBlur = 12;
     ctx.font = 'bold 20px monospace';
-    ctx.fillText('ROUND ' + state.round, W/2, H/2 - 70);
+    ctx.fillText('ROUND ' + state.round, bannerX, H/2 - 70);
     ctx.restore();
   }
 }
