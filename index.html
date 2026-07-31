@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Space Invaders</title>
+<style>
+  html,body{margin:0;height:100%;background:radial-gradient(ellipse at center,#0b0e2a 0%,#04050f 70%);
+    display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:'Courier New',monospace;}
+  #wrap{position:relative;}
+  canvas{background:radial-gradient(ellipse at 50% 30%,#0d1030 0%,#020210 80%);
+    border:2px solid #4ff3ff;border-radius:12px;
+    box-shadow:0 0 20px #4ff3ff,0 0 60px #4ff3ff55,inset 0 0 40px #0ff3ff22;}
+  #hud{position:absolute;top:10px;left:16px;right:16px;display:flex;justify-content:space-between;
+    color:#4ff3ff;text-shadow:0 0 8px #4ff3ff;font-size:18px;letter-spacing:2px;pointer-events:none;}
+  #msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;
+    color:#ff4fd0;text-shadow:0 0 12px #ff4fd0,0 0 30px #ff4fd0;font-size:28px;display:none;pointer-events:none;}
+  #msg span{display:block;font-size:15px;color:#4ff3ff;text-shadow:0 0 8px #4ff3ff;margin-top:10px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="640" height="720"></canvas>
+  <div id="hud"><div id="score">SCORE: 0</div><div id="lives">LIVES: ♥♥♥</div></div>
+  <div id="msg">GAME OVER<span>Press R to restart</span></div>
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const scoreEl = document.getElementById('score'), livesEl = document.getElementById('lives'), msgEl = document.getElementById('msg');
+
+let keys = {};
+addEventListener('keydown', e => {
+  if (['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  keys[e.key] = true;
+  if (e.key === 'r' || e.key === 'R') if (state.over) init();
+});
+addEventListener('keyup', e => keys[e.key] = false);
+
+const COLS = 11, ROWS = 5, A_W = 34, A_H = 24, A_GAP = 14;
+const gridW = COLS * (A_W + A_GAP) - A_GAP;
+const ROW_COLORS = ['#ff4fd0','#ff8a4f','#ffe14f','#4fff8a','#4ff3ff'];
+
+let state, player, aliens, bullets, aBullets, particles;
+
+function init() {
+  state = { score: 0, lives: 3, over: false, dir: 1, speed: 1, dropping: false, dropAmt: 0, shootTimer: 0 };
+  player = { x: W/2 - 20, y: H - 50, w: 40, h: 20, speed: 6 };
+  aliens = [];
+  const offX = (W - gridW) / 2;
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      aliens.push({ x: offX + c*(A_W+A_GAP), y: 70 + r*(A_H+A_GAP), w: A_W, h: A_H, alive: true, row: r });
+  bullets = []; aBullets = []; particles = [];
+  msgEl.style.display = 'none';
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    const a = Math.random()*Math.PI*2, sp = 1 + Math.random()*3;
+    particles.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 30, color });
+  }
+}
+
+function update() {
+  if (state.over) return;
+
+  if (keys['ArrowLeft']) player.x -= player.speed;
+  if (keys['ArrowRight']) player.x += player.speed;
+  player.x = Math.max(0, Math.min(W - player.w, player.x));
+
+  state.shootTimer--;
+  if (keys[' '] && state.shootTimer <= 0) {
+    bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 12 });
+    state.shootTimer = 18;
+  }
+
+  bullets.forEach(b => b.y -= 9);
+  bullets = bullets.filter(b => b.y > -20);
+  aBullets.forEach(b => b.y += 5);
+  aBullets = aBullets.filter(b => b.y < H + 20);
+
+  const alive = aliens.filter(a => a.alive);
+  let hitEdge = false;
+  for (const a of alive) {
+    if (a.x + a.w >= W && state.dir === 1) hitEdge = true;
+    if (a.x <= 0 && state.dir === -1) hitEdge = true;
+  }
+  if (hitEdge) {
+    state.dir *= -1;
+    state.speed += 0.18;
+    for (const a of alive) a.y += 16;
+  }
+  for (const a of alive) a.x += state.dir * state.speed;
+
+  if (Math.random() < 0.02 + alive.length * 0.0003 && alive.length) {
+    const shooter = alive[Math.floor(Math.random()*alive.length)];
+    aBullets.push({ x: shooter.x + shooter.w/2 - 2, y: shooter.y + shooter.h, w: 4, h: 12 });
+  }
+
+  for (const b of bullets) {
+    for (const a of alive) {
+      if (!a.alive) continue;
+      if (b.x < a.x+a.w && b.x+b.w > a.x && b.y < a.y+a.h && b.y+b.h > a.y) {
+        a.alive = false; b.y = -999;
+        state.score += (ROWS - a.row) * 10;
+        spawnParticles(a.x+a.w/2, a.y+a.h/2, ROW_COLORS[a.row]);
+      }
+    }
+  }
+  bullets = bullets.filter(b => b.y > -20);
+
+  for (const b of aBullets) {
+    if (b.x < player.x+player.w && b.x+b.w > player.x && b.y < player.y+player.h && b.y+b.h > player.y) {
+      b.y = H + 999;
+      state.lives--;
+      spawnParticles(player.x+player.w/2, player.y+player.h/2, '#4ff3ff');
+      if (state.lives <= 0) endGame();
+    }
+  }
+  aBullets = aBullets.filter(b => b.y < H + 20);
+
+  for (const a of alive) if (a.y + a.h >= player.y) endGame();
+
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
+  particles = particles.filter(p => p.life > 0);
+
+  if (alive.length === 0) init();
+
+  scoreEl.textContent = 'SCORE: ' + state.score;
+  livesEl.textContent = 'LIVES: ' + '♥'.repeat(Math.max(state.lives,0));
+}
+
+function endGame() {
+  state.over = true;
+  msgEl.style.display = 'block';
+}
+
+function glowRect(x, y, w, h, color) {
+  ctx.save();
+  ctx.shadowColor = color; ctx.shadowBlur = 14;
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
+
+function drawAlien(a) {
+  const color = ROW_COLORS[a.row];
+  ctx.save();
+  ctx.shadowColor = color; ctx.shadowBlur = 10;
+  ctx.fillStyle = color;
+  ctx.fillRect(a.x+6, a.y, a.w-12, 6);
+  ctx.fillRect(a.x, a.y+6, a.w, 8);
+  ctx.fillRect(a.x-4, a.y+14, a.w+8, 6);
+  ctx.fillStyle = '#04050f';
+  ctx.fillRect(a.x+7, a.y+8, 5, 5);
+  ctx.fillRect(a.x+a.w-12, a.y+8, 5, 5);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.strokeStyle = '#ffffff08';
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 97) % W, y = (i * 53) % H;
+    ctx.fillStyle = '#ffffff' + (10 + (i%5)*3).toString(16);
+    ctx.fillRect(x, y, 2, 2);
+  }
+  ctx.restore();
+
+  aliens.forEach(a => a.alive && drawAlien(a));
+  bullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, '#4fff8a'));
+  aBullets.forEach(b => glowRect(b.x, b.y, b.w, b.h, '#ff4f4f'));
+
+  ctx.save();
+  ctx.shadowColor = '#4ff3ff'; ctx.shadowBlur = 16;
+  ctx.fillStyle = '#4ff3ff';
+  ctx.beginPath();
+  ctx.moveTo(player.x + player.w/2, player.y);
+  ctx.lineTo(player.x + player.w, player.y + player.h);
+  ctx.lineTo(player.x, player.y + player.h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life / 30;
+    ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 3, 3);
+    ctx.restore();
+  });
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+loop();
+</script>
+</body>
+</html>
